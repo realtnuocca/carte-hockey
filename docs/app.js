@@ -117,7 +117,6 @@ function brancherPhoto(cote) {
       const apercu = $(`apercu-${cote}`);
       apercu.src = URL.createObjectURL(blob);
       apercu.hidden = false;
-      $("btn-identifier").disabled = !etat.recto;
       message("msg-scan", "");
     } catch (err) {
       message("msg-scan", `Photo illisible : ${err.message}`, "erreur");
@@ -135,24 +134,61 @@ function reinitialiserScan() {
     apercu.hidden = true;
     apercu.removeAttribute("src");
   }
-  $("btn-identifier").disabled = true;
 }
 
 // ---------------------------------------------------------------
 // Identification par l'IA
 // ---------------------------------------------------------------
+const DELAI_IDENTIFICATION = 60_000; // ms
+
+async function appelerIdentification(corps) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error("Session expirée : déconnecte-toi et reconnecte-toi.");
+
+  const controle = new AbortController();
+  const minuterie = setTimeout(() => controle.abort(), DELAI_IDENTIFICATION);
+  let rep;
+  try {
+    rep = await fetch(`${SUPABASE_URL}/functions/v1/identify-card`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: SUPABASE_ANON_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(corps),
+      signal: controle.signal,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error("Aucune réponse après 60 secondes. Réessaie avec une meilleure connexion.");
+    throw new Error(`Impossible de joindre le serveur (${err.message}). Vérifie ta connexion.`);
+  } finally {
+    clearTimeout(minuterie);
+  }
+
+  const texte = await rep.text();
+  let donnees = null;
+  try { donnees = JSON.parse(texte); } catch { /* réponse non JSON */ }
+  if (!rep.ok) {
+    throw new Error(`${donnees?.erreur || donnees?.message || texte.slice(0, 120) || "Erreur inconnue"} (code ${rep.status})`);
+  }
+  if (!donnees?.fiche) throw new Error("Réponse vide du serveur.");
+  return donnees;
+}
+
 $("btn-identifier").addEventListener("click", async () => {
   const bouton = $("btn-identifier");
+  if (!etat.recto) {
+    message("msg-scan", "Prends d'abord la photo du recto.", "erreur");
+    return;
+  }
   bouton.disabled = true;
-  message("msg-scan", "Identification en cours…");
+  bouton.textContent = "Identification en cours…";
+  message("msg-scan", "Envoi des photos à l'IA, ça prend 5 à 20 secondes…");
   try {
     const corps = { recto: await blobEnBase64(etat.recto) };
     if (etat.verso) corps.verso = await blobEnBase64(etat.verso);
-    const { data, error } = await supabase.functions.invoke("identify-card", { body: corps });
-    if (error) {
-      const detail = await error.context?.json?.().catch(() => null);
-      throw new Error(detail?.erreur || error.message);
-    }
+    const data = await appelerIdentification(corps);
     etat.proposition = data.fiche;
     etat.modele = data.modele;
     remplirFiche(data.fiche);
@@ -161,7 +197,8 @@ $("btn-identifier").addEventListener("click", async () => {
   } catch (err) {
     message("msg-scan", `Échec : ${err.message}`, "erreur");
   } finally {
-    bouton.disabled = !etat.recto;
+    bouton.textContent = "Identifier la carte";
+    bouton.disabled = false;
   }
 });
 
@@ -359,6 +396,18 @@ $("d-supprimer").addEventListener("click", async () => {
   $("detail").close();
   chargerCartes();
 });
+
+// ---------------------------------------------------------------
+// Toute erreur imprévue s'affiche à l'écran plutôt que de disparaître
+// ---------------------------------------------------------------
+function afficherErreurGlobale(texte) {
+  const vueActive = [...document.querySelectorAll(".vue")].find((v) => !v.hidden);
+  const cible = vueActive?.querySelector(".message") || $("msg-scan");
+  cible.textContent = `Erreur : ${texte}`;
+  cible.className = "message erreur";
+}
+window.addEventListener("error", (e) => afficherErreurGlobale(e.message || "inconnue"));
+window.addEventListener("unhandledrejection", (e) => afficherErreurGlobale(e.reason?.message || String(e.reason)));
 
 // ---------------------------------------------------------------
 // Mode hors ligne minimal (coquille de l'app en cache)

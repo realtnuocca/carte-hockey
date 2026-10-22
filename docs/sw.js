@@ -1,6 +1,6 @@
 // Garde la coquille de l'app en cache pour un démarrage rapide.
 // Les données (cartes, photos, IA) passent toujours par le réseau.
-const CACHE = "cartes-qc-v1";
+const CACHE = "cartes-qc-v2";
 const COQUILLE = [
   "./", "index.html", "styles.css", "app.js", "lib.js", "config.js",
   "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png",
